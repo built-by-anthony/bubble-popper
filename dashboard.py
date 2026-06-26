@@ -8,6 +8,8 @@ import psycopg
 import streamlit as st
 from dotenv import load_dotenv
 
+from model import FEATURE_COLS, build_dataset, train, current_signal
+
 load_dotenv()
 
 DATABASE_URL = os.environ["DATABASE_URL"]
@@ -33,6 +35,25 @@ COMPANY_METRICS = {
 }
 
 COMPANIES = ["msft", "googl", "amzn", "meta", "nvda"]
+
+
+@st.cache_data(ttl=3600)
+def load_model():
+    dataset = build_dataset()
+    pipe, results = train(dataset)
+    prob = current_signal(pipe, dataset)
+
+    features = [c for c in FEATURE_COLS if c in dataset.columns]
+    coefs = pd.Series(
+        pipe.named_steps["clf"].coef_[0],
+        index=features,
+    ).sort_values(key=abs, ascending=False)
+
+    # Full probability history from the whole dataset
+    all_proba = pipe.predict_proba(dataset[features])[:, 1]
+    prob_history = pd.DataFrame({"date": dataset.index, "crash_prob": all_proba})
+
+    return prob, coefs, prob_history
 
 
 @st.cache_data(ttl=3600)
@@ -64,6 +85,60 @@ Data updates daily via automated ingestion from **FRED** (Federal Reserve Econom
 - **Company Fundamentals** — compare R&D spend, margins, and leverage across the 5 major AI companies
 - **Composite Bubble Signal** — a single index averaging all selected macro signals; above zero means conditions are more bubble-like than the historical average
 """)
+
+# --- Model Section ---
+st.header("Crash Probability Model")
+st.caption(
+    "Logistic regression trained on FRED macro signals. Predicts the probability of a 30%+ "
+    "Nasdaq 100 drawdown occurring within the next 12 months. Trained on data from 1990–present "
+    "with a time-ordered 80/20 train/test split to prevent lookahead bias."
+)
+
+with st.spinner("Training model..."):
+    crash_prob, coefs, prob_history = load_model()
+
+col_a, col_b = st.columns([1, 3])
+with col_a:
+    st.metric(
+        label="Current Crash Probability",
+        value=f"{crash_prob:.1%}",
+        help="Probability of a 30%+ NDX drawdown within 12 months, as of today.",
+    )
+    st.caption(f"As of {date.today()}")
+
+with col_b:
+    fig_prob = go.Figure()
+    fig_prob.add_trace(go.Scatter(
+        x=prob_history["date"], y=prob_history["crash_prob"],
+        mode="lines", name="Crash Probability",
+        line=dict(color="crimson", width=1.5),
+        fill="tozeroy", fillcolor="rgba(220,20,60,0.08)",
+    ))
+    fig_prob.add_hline(y=0.3, line_dash="dash", line_color="orange",
+                       annotation_text="30% threshold", annotation_position="top left")
+    fig_prob.update_layout(
+        xaxis_title="Date",
+        yaxis_title="Crash Probability",
+        yaxis_tickformat=".0%",
+        hovermode="x unified",
+        margin=dict(t=20),
+    )
+    st.plotly_chart(fig_prob, use_container_width=True)
+
+st.subheader("Feature Importance")
+st.caption("Model coefficients — positive means the feature increases crash probability, negative means it reduces it.")
+fig_coef = px.bar(
+    coefs.head(12).reset_index(),
+    x="index", y=0,
+    labels={"index": "Feature", 0: "Coefficient"},
+    color=coefs.head(12).values,
+    color_continuous_scale=["green", "white", "crimson"],
+    color_continuous_midpoint=0,
+)
+fig_coef.update_layout(showlegend=False, coloraxis_showscale=False, margin=dict(t=20))
+st.plotly_chart(fig_coef, use_container_width=True)
+
+st.divider()
 
 # --- Sidebar controls ---
 st.sidebar.header("Controls")
