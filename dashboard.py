@@ -57,21 +57,66 @@ def load_model():
     return prob, coefs, prob_history
 
 
+CHATGPT_LAUNCH = datetime(2022, 11, 30)
+
+
 @st.cache_data(ttl=3600)
-def load_capex_rate() -> tuple[float, dict]:
-    """Return combined annual capex rate and per-company breakdown from most recent filings."""
+def load_capex_rate() -> tuple[float, float, dict]:
+    """
+    Returns:
+      - annual_rate: combined most-recent annual capex across all companies
+      - total_since_launch: pro-rated capex spend since ChatGPT launch (Nov 30 2022)
+      - by_company: most recent annual capex per company
+    """
     with psycopg.connect(DATABASE_URL, prepare_threshold=None) as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT DISTINCT ON (metric_id) metric_id, obs_date, raw_value
+                SELECT metric_id, obs_date, raw_value
                 FROM fact_observation
                 WHERE metric_id LIKE '%_capex'
-                ORDER BY metric_id, obs_date DESC
+                  AND obs_date >= '2022-01-01'
+                ORDER BY metric_id, obs_date ASC
             """)
             rows = cur.fetchall()
-    by_company = {row[0].replace("_capex", "").upper(): row[2] for row in rows}
-    annual_total = sum(by_company.values())
-    return annual_total, by_company
+
+    now = datetime.utcnow()
+
+    # Group by company
+    by_ticker: dict[str, list] = {}
+    for metric_id, obs_date, value in rows:
+        ticker = metric_id.replace("_capex", "").upper()
+        by_ticker.setdefault(ticker, []).append((obs_date, value))
+
+    total_since_launch = 0.0
+    by_company = {}
+
+    for ticker, obs in by_ticker.items():
+        obs.sort()
+        for i, (obs_date, value) in enumerate(obs):
+            fy_end = datetime.combine(obs_date, datetime.min.time())
+            prev_date = obs[i - 1][0] if i > 0 else obs_date.replace(year=obs_date.year - 1)
+            fy_start = datetime.combine(prev_date, datetime.min.time())
+
+            overlap_start = max(fy_start, CHATGPT_LAUNCH)
+            overlap_end = min(fy_end, now)
+            if overlap_end <= overlap_start:
+                continue
+
+            fy_days = max((fy_end - fy_start).days, 1)
+            overlap_days = (overlap_end - overlap_start).days
+            total_since_launch += value * (overlap_days / fy_days)
+
+        # Current partial period since last fiscal year end
+        last_date, last_value = obs[-1]
+        last_dt = datetime.combine(last_date, datetime.min.time())
+        if now > last_dt:
+            days_elapsed = (now - last_dt).days
+            total_since_launch += last_value / 365 * days_elapsed
+
+        by_company[ticker] = obs[-1][1]
+
+    annual_rate = sum(by_company.values())
+    return annual_rate, total_since_launch, by_company
 
 
 @st.cache_data(ttl=3600)
@@ -106,17 +151,11 @@ Data updates daily via automated ingestion from **FRED** (Federal Reserve Econom
 
 # --- AI Spend Clock ---
 st.header("AI Infrastructure Spend Clock")
-st.caption("Combined annual capex from MSFT, GOOGL, AMZN, META, and NVDA — the five companies building AI infrastructure. Based on most recent 10-K filings. Ticking up from Jan 1 of the current year.")
+st.caption("Combined capex from MSFT, GOOGL, AMZN, META, and NVDA since the ChatGPT launch on Nov 30, 2022 — the moment the AI arms race began. Pro-rated from annual 10-K filings. Ticking up in real time at the current annual run rate.")
 
-annual_rate, by_company = load_capex_rate()
+annual_rate, total_since_launch, by_company = load_capex_rate()
 seconds_per_year = 365.25 * 24 * 3600
 rate_per_second = annual_rate / seconds_per_year
-
-# YTD seconds elapsed since Jan 1
-now = datetime.utcnow()
-jan1 = datetime(now.year, 1, 1)
-ytd_seconds = (now - jan1).total_seconds()
-ytd_spend = ytd_seconds * rate_per_second
 
 components.html(f"""
 <style>
@@ -133,6 +172,11 @@ components.html(f"""
     letter-spacing: 2px;
     text-transform: uppercase;
     margin-bottom: 8px;
+  }}
+  .clock-sublabel {{
+    color: #555;
+    font-size: 12px;
+    margin-bottom: 16px;
   }}
   .clock-value {{
     color: #ff4b4b;
@@ -152,22 +196,13 @@ components.html(f"""
     margin-top: 20px;
     flex-wrap: wrap;
   }}
-  .company-item {{
-    text-align: center;
-  }}
-  .company-name {{
-    color: #888;
-    font-size: 11px;
-    letter-spacing: 1px;
-  }}
-  .company-rate {{
-    color: #ccc;
-    font-size: 15px;
-    font-weight: bold;
-  }}
+  .company-item {{ text-align: center; }}
+  .company-name {{ color: #888; font-size: 11px; letter-spacing: 1px; }}
+  .company-rate {{ color: #ccc; font-size: 15px; font-weight: bold; }}
 </style>
 <div class="clock-wrap">
-  <div class="clock-label">AI Infrastructure Spend — Year to Date {now.year}</div>
+  <div class="clock-label">AI Infrastructure Spend</div>
+  <div class="clock-sublabel">Since ChatGPT Launch — November 30, 2022</div>
   <div class="clock-value" id="clock">$0</div>
   <div class="clock-sub">${annual_rate/1e9:.1f}B combined annual rate &nbsp;·&nbsp; ${rate_per_second:,.0f} per second</div>
   <div class="company-row">
@@ -175,7 +210,7 @@ components.html(f"""
   </div>
 </div>
 <script>
-  const startValue = {ytd_spend:.2f};
+  const startValue = {total_since_launch:.2f};
   const ratePerMs = {rate_per_second / 1000:.6f};
   const startTime = Date.now();
 
@@ -189,16 +224,18 @@ components.html(f"""
     document.getElementById('clock').innerText = fmt(val);
   }}, 100);
 </script>
-""", height=260)
+""", height=280)
 
 st.divider()
 
 # --- Model Section ---
-st.header("Crash Probability Model")
-st.caption(
-    "Logistic regression trained on FRED macro signals. Predicts the probability of a 30%+ "
-    "Nasdaq 100 drawdown occurring within the next 12 months. Trained on data from 1990–present "
-    "with a time-ordered 80/20 train/test split to prevent lookahead bias."
+st.header("Crash Probability Model ⚠️ Experimental")
+st.warning(
+    "**This model is experimental and should not be used for investment decisions.** "
+    "It is a logistic regression trained on only 3–4 historical crash events (dot-com, GFC, 2022). "
+    "That is not enough data to build a reliable predictor. The output reflects whether current macro "
+    "conditions resemble historical pre-crash periods — not a true probability of a crash occurring. "
+    "AUC 0.804 on out-of-sample data, but with very few real events to validate against."
 )
 
 with st.spinner("Training model..."):
