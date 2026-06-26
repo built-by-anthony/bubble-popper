@@ -24,6 +24,8 @@ METRICS = [
     {"metric_id": "m2_money_supply",                "series_id": "M2SL"},
     {"metric_id": "credit_spreads_baa",              "series_id": "BAA10Y"},
     {"metric_id": "vix",                            "series_id": "VIXCLS"},
+    {"metric_id": "credit_growth",                  "series_id": "TOTLL"},
+    {"metric_id": "recession_indicator",            "series_id": "USREC"},
 ]
 
 UPSERT_SQL = """

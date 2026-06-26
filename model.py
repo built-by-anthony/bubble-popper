@@ -25,6 +25,8 @@ FRED_FEATURES = [
     "m2_yoy_growth",
     "credit_spreads_baa",
     "vix",
+    "credit_growth",
+    "recession_indicator",
 ]
 
 # Combined hyperscaler capex — annual, forward-filled daily
@@ -96,11 +98,15 @@ def fetch_features() -> pd.DataFrame:
     return pivoted
 
 
+BINARY_FEATURES = {"recession_indicator"}
+CONTINUOUS_FEATURES = [f for f in FRED_FEATURES if f not in BINARY_FEATURES]
+
+
 def engineer_features(features: pd.DataFrame) -> pd.DataFrame:
-    """Add rate-of-change and rolling signals for FRED features only."""
+    """Add rate-of-change and rolling signals for continuous FRED features."""
     df = features[FRED_FEATURES].copy()
 
-    for col in FRED_FEATURES:
+    for col in CONTINUOUS_FEATURES:
         if col not in df.columns:
             continue
         df[f"{col}_chg_90d"] = df[col].pct_change(90)
@@ -135,6 +141,8 @@ FEATURE_COLS = [
     "m2_yoy_growth", "m2_yoy_growth_chg_90d",
     "credit_spreads_baa", "credit_spreads_baa_chg_90d", "credit_spreads_baa_zscore",
     "vix", "vix_chg_90d", "vix_zscore",
+    "credit_growth", "credit_growth_chg_90d", "credit_growth_chg_365d", "credit_growth_zscore",
+    "recession_indicator",
 ]
 
 
