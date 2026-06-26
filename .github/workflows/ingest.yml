@@ -1,4 +1,4 @@
-name: FRED Ingestion
+name: Daily Ingestion
 
 on:
   schedule:
@@ -16,8 +16,9 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Run FRED ingestion
+      - name: Run ingestion
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
         run: uv run main.py
