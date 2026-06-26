@@ -22,6 +22,8 @@ METRICS = [
     {"metric_id": "financial_conditions_leverage",  "series_id": "NFCILEVERAGE"},
     {"metric_id": "financial_conditions_nonfin_leverage", "series_id": "NFCINONFINLEVERAGE"},
     {"metric_id": "m2_money_supply",                "series_id": "M2SL"},
+    {"metric_id": "credit_spreads_baa",              "series_id": "BAA10Y"},
+    {"metric_id": "vix",                            "series_id": "VIXCLS"},
 ]
 
 UPSERT_SQL = """

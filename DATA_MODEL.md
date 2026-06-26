@@ -29,6 +29,8 @@ Pulled daily via the FRED API v2. All series land in `fact_observation` with `so
 | `financial_conditions_nonfin_leverage` | NFCINONFINLEVERAGE | Non-financial leverage subindex | -1 |
 | `m2_money_supply` | M2SL | Total money supply (monthly) | +1 |
 | `m2_yoy_growth` | derived from M2SL | YoY % change in M2 | +1 |
+| `credit_spreads_baa` | BAA10Y | Moody's BAA corporate spread over 10y Treasury (daily) | +1 (wide = stress) |
+| `vix` | VIXCLS | CBOE Volatility Index (daily) | mixed (low VIX = complacency) |
 
 `direction` indicates whether a HIGH value means MORE bubble-like. NFCI metrics are inverted — low/negative means loose financial conditions, which is frothy.
 

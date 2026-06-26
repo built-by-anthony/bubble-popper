@@ -22,6 +22,8 @@ FRED_METRICS = {
     "financial_conditions_nonfin_leverage": "NFCI Non-Fin Leverage",
     "m2_money_supply":                    "M2 Money Supply",
     "m2_yoy_growth":                      "M2 YoY Growth %",
+    "credit_spreads_baa":                  "Credit Spreads (BAA)",
+    "vix":                                "VIX",
 }
 
 COMPANY_METRICS = {
