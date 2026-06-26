@@ -263,7 +263,7 @@ with tab_overview:
     with st.spinner("Training model..."):
         crash_prob, coefs, prob_history = load_model()
 
-    m_col, _ = st.columns([1, 3])
+    _, m_col, _ = st.columns([2, 1, 2])
     with m_col:
         st.metric("NDX 30%+ Drawdown in 12mo", f"{crash_prob:.1%}")
         st.caption(f"As of {date.today()}")
