@@ -24,11 +24,10 @@ FRED_METRICS = {
     "m2_yoy_growth":                      "M2 YoY Growth %",
 }
 
-EDGAR_METRICS = {
-    "rd_to_revenue":   "R&D as % of Revenue",
-    "net_margin":      "Net Margin %",
-    "debt_to_assets":  "Debt as % of Assets",
-    "free_cash_flow":  "Free Cash Flow ($)",
+COMPANY_METRICS = {
+    "rd_to_revenue":  "R&D as % of Revenue",
+    "net_margin":     "Net Margin %",
+    "debt_to_assets": "Debt as % of Assets",
 }
 
 COMPANIES = ["msft", "googl", "amzn", "meta", "nvda"]
@@ -42,7 +41,7 @@ def load_observations(metric_ids: list[str], start: date, end: date) -> pd.DataF
         FROM fact_observation
         WHERE metric_id IN ({placeholders})
           AND obs_date BETWEEN %s AND %s
-        ORDER BY obs_date
+        ORDER BY obs_date, source
     """
     with psycopg.connect(DATABASE_URL, prepare_threshold=None) as conn:
         with conn.cursor() as cur:
@@ -99,7 +98,7 @@ if selected_fred:
         st.info("No data for selected range.")
 
 # --- EDGAR Section ---
-st.header("Company Fundamentals (EDGAR)")
+st.header("Company Fundamentals")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -112,8 +111,8 @@ with col1:
 with col2:
     selected_edgar_metric = st.selectbox(
         "Metric",
-        options=list(EDGAR_METRICS.keys()),
-        format_func=lambda x: EDGAR_METRICS[x],
+        options=list(COMPANY_METRICS.keys()),
+        format_func=lambda x: COMPANY_METRICS[x],
     )
 
 if selected_companies and selected_edgar_metric:
@@ -126,7 +125,7 @@ if selected_companies and selected_edgar_metric:
             df_edgar, x="obs_date", y="raw_value", color="company",
             labels={
                 "obs_date": "Date",
-                "raw_value": EDGAR_METRICS[selected_edgar_metric],
+                "raw_value": COMPANY_METRICS[selected_edgar_metric],
                 "company": "Company",
             },
         )

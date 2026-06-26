@@ -44,27 +44,24 @@ Pulled quarterly via the EDGAR XBRL API. One call per company fetches all report
 
 **Metrics per company:**
 
-| metric_id pattern | What it measures | Bubble signal |
-|---|---|---|
-| `{ticker}_rd_to_revenue` | R&D expense / revenue (%) | High = burning cash on unproven tech |
-| `{ticker}_net_margin` | Net income / revenue (%) | Low/negative = fundamentals not supporting valuation |
-| `{ticker}_debt_to_assets` | Long-term debt / total assets (%) | High = leveraged up during hype cycle |
-| `{ticker}_free_cash_flow` | Operating cash flow - capex ($) | Negative = cash burn mode |
+| metric_id pattern | What it measures | Bubble signal | Source |
+|---|---|---|---|
+| `{ticker}_rd_to_revenue` | R&D expense / revenue (%) | High = burning cash on unproven tech | EDGAR 10-K (annual) — not available for AMZN |
+| `{ticker}_net_margin` | Net income / revenue (%) | Low/negative = fundamentals not supporting valuation | EDGAR 10-K (annual) |
+| `{ticker}_debt_to_assets` | Long-term debt / total assets (%) | High = leveraged up during hype cycle | EDGAR 10-K + 10-Q (quarterly) |
+| `{ticker}_free_cash_flow` | Operating cash flow - capex ($) | Negative = cash burn mode | yfinance (quarterly) |
 
-#### Handling YTD figures in 10-Qs
+#### Why annual for income statement metrics
 
-SEC 10-Q filings report **cumulative year-to-date figures**, not single-quarter figures. A Q3 filing for revenue means January through September, not just July through September.
+SEC 10-Q filings report **cumulative year-to-date figures** for income statement and cash flow items, not single-quarter figures. Computing discrete quarterly values requires subtracting consecutive YTD periods — a process that breaks on amended filings and restatements.
 
-To get discrete quarterly values we subtract consecutive periods:
+To preserve statistical integrity, income statement metrics (revenue, R&D, net income) use **annual 10-K figures only**. These are fully audited and directly comparable across periods.
 
-```
-Q1 discrete = Q1 YTD
-Q2 discrete = Q2 YTD − Q1 YTD
-Q3 discrete = Q3 YTD − Q2 YTD
-Q4 discrete = Full Year (10-K) − Q3 YTD
-```
+Balance sheet items (debt, assets) are point-in-time snapshots and are pulled from both 10-K and 10-Q — no subtraction needed.
 
-Balance sheet items (debt, assets) are point-in-time snapshots and do not need this treatment — we use them directly from both 10-K and 10-Q filings.
+Capex and free cash flow are sourced from **yfinance**, which provides pre-computed discrete quarterly figures without the YTD math problem.
+
+**AMZN R&D:** Amazon does not report R&D as a separate line item in their filings. They bundle it into "Technology and content" expense, which is a custom category not comparable to R&D from other companies. `amzn_rd_to_revenue` is therefore unavailable from any source.
 
 #### XBRL tag fallbacks
 
