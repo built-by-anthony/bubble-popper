@@ -100,6 +100,8 @@ def compute_derived(
             val = rd[end_date] / rev * 100
             if 0 <= val <= 200:
                 rows.append((f"{ticker}_rd_to_revenue", end_date, val, ticker.upper(), valid_as_of))
+            if rd[end_date] > 0:
+                rows.append((f"{ticker}_rd_expense", end_date, rd[end_date], ticker.upper(), valid_as_of))
         if end_date in net_income:
             val = net_income[end_date] / rev * 100
             if -100 <= val <= 100:

@@ -73,7 +73,7 @@ def load_capex_rate() -> tuple[float, float, dict]:
             cur.execute("""
                 SELECT metric_id, obs_date, raw_value
                 FROM fact_observation
-                WHERE metric_id LIKE '%_capex'
+                WHERE (metric_id LIKE '%_capex' OR metric_id LIKE '%_rd_expense')
                   AND obs_date >= '2022-01-01'
                 ORDER BY metric_id, obs_date ASC
             """)
@@ -81,11 +81,25 @@ def load_capex_rate() -> tuple[float, float, dict]:
 
     now = datetime.utcnow()
 
-    # Group by company
+    # Group by company, summing capex + R&D per fiscal year
     by_ticker: dict[str, list] = {}
+    rd_by_ticker: dict[str, dict] = {}
+
     for metric_id, obs_date, value in rows:
-        ticker = metric_id.replace("_capex", "").upper()
-        by_ticker.setdefault(ticker, []).append((obs_date, value))
+        if metric_id.endswith("_capex"):
+            ticker = metric_id.replace("_capex", "").upper()
+            by_ticker.setdefault(ticker, []).append((obs_date, value))
+        elif metric_id.endswith("_rd_expense"):
+            ticker = metric_id.replace("_rd_expense", "").upper()
+            rd_by_ticker.setdefault(ticker, {})[obs_date] = value
+
+    # Merge R&D into capex series
+    for ticker, obs in by_ticker.items():
+        rd = rd_by_ticker.get(ticker, {})
+        by_ticker[ticker] = [
+            (obs_date, value + rd.get(obs_date, 0))
+            for obs_date, value in obs
+        ]
 
     total_since_launch = 0.0
     by_company = {}
@@ -151,7 +165,7 @@ Data updates daily via automated ingestion from **FRED** (Federal Reserve Econom
 
 # --- AI Spend Clock ---
 st.header("AI Infrastructure Spend Clock")
-st.caption("Combined capex from MSFT, GOOGL, AMZN, META, and NVDA since the ChatGPT launch on Nov 30, 2022 — the moment the AI arms race began. Pro-rated from annual 10-K filings. Ticking up in real time at the current annual run rate.")
+st.caption("Combined capex + R&D spend from MSFT, GOOGL, AMZN, META, and NVDA since the ChatGPT launch on Nov 30, 2022 — the moment the AI arms race began. Pro-rated from annual 10-K filings. Note: AMZN does not report R&D separately so only capex is included for AMZN. Ticking up in real time at the current annual run rate.")
 
 annual_rate, total_since_launch, by_company = load_capex_rate()
 seconds_per_year = 365.25 * 24 * 3600
@@ -201,7 +215,7 @@ components.html(f"""
   .company-rate {{ color: #ccc; font-size: 15px; font-weight: bold; }}
 </style>
 <div class="clock-wrap">
-  <div class="clock-label">AI Infrastructure Spend</div>
+  <div class="clock-label">AI Investment (Capex + R&D)</div>
   <div class="clock-sublabel">Since ChatGPT Launch — November 30, 2022</div>
   <div class="clock-value" id="clock">$0</div>
   <div class="clock-sub">${annual_rate/1e9:.1f}B combined annual rate &nbsp;·&nbsp; ${rate_per_second:,.0f} per second</div>
