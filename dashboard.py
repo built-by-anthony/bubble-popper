@@ -16,17 +16,19 @@ load_dotenv()
 DATABASE_URL = os.environ["DATABASE_URL"]
 
 FRED_METRICS = {
-    "yield_curve_10y2y":                  "Yield Curve 10y-2y",
-    "yield_curve_10y3m":                  "Yield Curve 10y-3m",
-    "treasury_10y":                        "Treasury 10y",
-    "fed_funds":                           "Fed Funds Rate",
-    "financial_conditions":               "Financial Conditions (NFCI)",
-    "financial_conditions_leverage":      "NFCI Leverage",
+    "yield_curve_10y2y":                    "Yield Curve 10y-2y",
+    "yield_curve_10y3m":                    "Yield Curve 10y-3m",
+    "treasury_10y":                          "Treasury 10y",
+    "fed_funds":                             "Fed Funds Rate",
+    "financial_conditions":                 "Financial Conditions (NFCI)",
+    "financial_conditions_leverage":        "NFCI Leverage",
     "financial_conditions_nonfin_leverage": "NFCI Non-Fin Leverage",
-    "m2_money_supply":                    "M2 Money Supply",
-    "m2_yoy_growth":                      "M2 YoY Growth %",
-    "credit_spreads_baa":                  "Credit Spreads (BAA)",
-    "vix":                                "VIX",
+    "m2_money_supply":                      "M2 Money Supply",
+    "m2_yoy_growth":                        "M2 YoY Growth %",
+    "credit_spreads_baa":                    "Credit Spreads (BAA)",
+    "vix":                                  "VIX",
+    "credit_growth":                        "Credit Growth (TOTLL)",
+    "recession_indicator":                  "Recession Indicator (USREC)",
 }
 
 COMPANY_METRICS = {
@@ -36,7 +38,11 @@ COMPANY_METRICS = {
 }
 
 COMPANIES = ["msft", "googl", "amzn", "meta", "nvda"]
+CHATGPT_LAUNCH = datetime(2022, 11, 30)
+SECONDS_PER_YEAR = 365.25 * 24 * 3600
 
+
+# ── Data loaders ──────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600)
 def load_model():
@@ -50,23 +56,17 @@ def load_model():
         index=features,
     ).sort_values(key=abs, ascending=False)
 
-    # Full probability history from the whole dataset
     all_proba = pipe.predict_proba(dataset[features])[:, 1]
     prob_history = pd.DataFrame({"date": dataset.index, "crash_prob": all_proba})
 
     return prob, coefs, prob_history
 
 
-CHATGPT_LAUNCH = datetime(2022, 11, 30)
-
-
 @st.cache_data(ttl=3600)
-def load_capex_rate() -> tuple[float, float, dict]:
+def load_spend_data():
     """
-    Returns:
-      - annual_rate: combined most-recent annual capex across all companies
-      - total_since_launch: pro-rated capex spend since ChatGPT launch (Nov 30 2022)
-      - by_company: most recent annual capex per company
+    Returns capex-only, rd-only, and combined totals since ChatGPT launch,
+    plus current annual rates and per-company breakdowns.
     """
     with psycopg.connect(DATABASE_URL, prepare_threshold=None) as conn:
         with conn.cursor() as cur:
@@ -81,56 +81,60 @@ def load_capex_rate() -> tuple[float, float, dict]:
 
     now = datetime.utcnow()
 
-    # Group by company, summing capex + R&D per fiscal year
-    by_ticker: dict[str, list] = {}
-    rd_by_ticker: dict[str, dict] = {}
+    capex_series: dict[str, list] = {}
+    rd_series: dict[str, dict] = {}
 
     for metric_id, obs_date, value in rows:
         if metric_id.endswith("_capex"):
-            ticker = metric_id.replace("_capex", "").upper()
-            by_ticker.setdefault(ticker, []).append((obs_date, value))
+            t = metric_id.replace("_capex", "").upper()
+            capex_series.setdefault(t, []).append((obs_date, value))
         elif metric_id.endswith("_rd_expense"):
-            ticker = metric_id.replace("_rd_expense", "").upper()
-            rd_by_ticker.setdefault(ticker, {})[obs_date] = value
+            t = metric_id.replace("_rd_expense", "").upper()
+            rd_series.setdefault(t, {})[obs_date] = value
 
-    # Merge R&D into capex series
-    for ticker, obs in by_ticker.items():
-        rd = rd_by_ticker.get(ticker, {})
-        by_ticker[ticker] = [
-            (obs_date, value + rd.get(obs_date, 0))
-            for obs_date, value in obs
-        ]
+    def since_launch(by_ticker: dict[str, list]) -> tuple[float, dict, float]:
+        total = 0.0
+        latest = {}
+        for ticker, obs in by_ticker.items():
+            obs = sorted(obs)
+            co_total = 0.0
+            for i, (obs_date, value) in enumerate(obs):
+                fy_end = datetime.combine(obs_date, datetime.min.time())
+                prev = obs[i - 1][0] if i > 0 else obs_date.replace(year=obs_date.year - 1)
+                fy_start = datetime.combine(prev, datetime.min.time())
+                overlap_start = max(fy_start, CHATGPT_LAUNCH)
+                overlap_end = min(fy_end, now)
+                if overlap_end <= overlap_start:
+                    continue
+                fy_days = max((fy_end - fy_start).days, 1)
+                co_total += value * ((overlap_end - overlap_start).days / fy_days)
+            last_dt = datetime.combine(obs[-1][0], datetime.min.time())
+            if now > last_dt:
+                co_total += obs[-1][1] / 365 * (now - last_dt).days
+            latest[ticker] = obs[-1][1]
+            total += co_total
+        annual = sum(latest.values())
+        return total, latest, annual
 
-    total_since_launch = 0.0
-    by_company = {}
+    # Capex only
+    capex_total, capex_by_co, capex_annual = since_launch(capex_series)
 
-    for ticker, obs in by_ticker.items():
-        obs.sort()
-        for i, (obs_date, value) in enumerate(obs):
-            fy_end = datetime.combine(obs_date, datetime.min.time())
-            prev_date = obs[i - 1][0] if i > 0 else obs_date.replace(year=obs_date.year - 1)
-            fy_start = datetime.combine(prev_date, datetime.min.time())
+    # R&D only — build same shape as capex_series
+    rd_as_series = {t: list(sorted(d.items())) for t, d in rd_series.items()}
+    rd_total, rd_by_co, rd_annual = since_launch(rd_as_series)
 
-            overlap_start = max(fy_start, CHATGPT_LAUNCH)
-            overlap_end = min(fy_end, now)
-            if overlap_end <= overlap_start:
-                continue
+    # Combined — merge R&D into capex per fiscal year
+    combined_series = {}
+    for ticker, obs in capex_series.items():
+        rd = rd_series.get(ticker, {})
+        combined_series[ticker] = [(d, v + rd.get(d, 0)) for d, v in obs]
+    combined_total, combined_by_co, combined_annual = since_launch(combined_series)
 
-            fy_days = max((fy_end - fy_start).days, 1)
-            overlap_days = (overlap_end - overlap_start).days
-            total_since_launch += value * (overlap_days / fy_days)
-
-        # Current partial period since last fiscal year end
-        last_date, last_value = obs[-1]
-        last_dt = datetime.combine(last_date, datetime.min.time())
-        if now > last_dt:
-            days_elapsed = (now - last_dt).days
-            total_since_launch += last_value / 365 * days_elapsed
-
-        by_company[ticker] = obs[-1][1]
-
-    annual_rate = sum(by_company.values())
-    return annual_rate, total_since_launch, by_company
+    return {
+        "capex":    {"total": capex_total,    "annual": capex_annual,    "by_co": capex_by_co},
+        "rd":       {"total": rd_total,       "annual": rd_annual,       "by_co": rd_by_co},
+        "combined": {"total": combined_total, "annual": combined_annual, "by_co": combined_by_co},
+    }
 
 
 @st.cache_data(ttl=3600)
@@ -150,264 +154,256 @@ def load_observations(metric_ids: list[str], start: date, end: date) -> pd.DataF
     return pd.DataFrame(rows, columns=["metric_id", "obs_date", "raw_value"])
 
 
-st.set_page_config(page_title="Bubble Popper", layout="wide")
-st.title("Bubble Popper — AI Bubble Signal Dashboard")
-st.markdown("""
-This dashboard tracks macroeconomic and company fundamental signals to detect and time the AI bubble.
-Data updates daily via automated ingestion from **FRED** (Federal Reserve Economic Data) and **SEC EDGAR**.
+# ── Clock component ───────────────────────────────────────────────────────────
 
-**How to use:**
-- Use the **date range slider** in the sidebar to zoom in on any period
-- **Macro Signals** — toggle individual FRED series and normalize to z-scores to compare on the same scale
-- **Company Fundamentals** — compare R&D spend, margins, and leverage across the 5 major AI companies
-- **Composite Bubble Signal** — a single index averaging all selected macro signals; above zero means conditions are more bubble-like than the historical average
-""")
-
-# --- AI Spend Clock ---
-st.header("AI Infrastructure Spend Clock")
-st.caption("Combined capex + R&D spend from MSFT, GOOGL, AMZN, META, and NVDA since the ChatGPT launch on Nov 30, 2022 — the moment the AI arms race began. Pro-rated from annual 10-K filings. Note: AMZN does not report R&D separately so only capex is included for AMZN. Ticking up in real time at the current annual run rate.")
-
-annual_rate, total_since_launch, by_company = load_capex_rate()
-seconds_per_year = 365.25 * 24 * 3600
-rate_per_second = annual_rate / seconds_per_year
-
-components.html(f"""
+def render_clock(label: str, total: float, annual: float, by_co: dict, clock_id: str):
+    rate_per_sec = annual / SECONDS_PER_YEAR
+    company_html = "".join(
+        f'<div class="company-item">'
+        f'<div class="company-name">{k}</div>'
+        f'<div class="company-rate">${v/1e9:.1f}B/yr</div>'
+        f'</div>'
+        for k, v in sorted(by_co.items())
+    )
+    components.html(f"""
 <style>
-  .clock-wrap {{
+  .clock-wrap-{clock_id} {{
     background: #0e1117;
-    border-radius: 12px;
-    padding: 32px 40px;
+    border-radius: 10px;
+    padding: 24px 20px;
     text-align: center;
     font-family: 'Courier New', monospace;
   }}
-  .clock-label {{
+  .clock-label-{clock_id} {{
     color: #888;
-    font-size: 14px;
+    font-size: 11px;
     letter-spacing: 2px;
     text-transform: uppercase;
-    margin-bottom: 8px;
+    margin-bottom: 4px;
   }}
-  .clock-sublabel {{
-    color: #555;
-    font-size: 12px;
-    margin-bottom: 16px;
+  .clock-sublabel-{clock_id} {{
+    color: #444;
+    font-size: 10px;
+    margin-bottom: 12px;
   }}
-  .clock-value {{
+  .clock-value-{clock_id} {{
     color: #ff4b4b;
-    font-size: 52px;
+    font-size: 28px;
     font-weight: bold;
-    letter-spacing: 2px;
+    letter-spacing: 1px;
   }}
-  .clock-sub {{
+  .clock-rate-{clock_id} {{
     color: #555;
-    font-size: 13px;
-    margin-top: 12px;
+    font-size: 11px;
+    margin-top: 8px;
   }}
-  .company-row {{
+  .company-row-{clock_id} {{
     display: flex;
     justify-content: center;
-    gap: 32px;
-    margin-top: 20px;
+    gap: 12px;
+    margin-top: 12px;
     flex-wrap: wrap;
   }}
   .company-item {{ text-align: center; }}
-  .company-name {{ color: #888; font-size: 11px; letter-spacing: 1px; }}
-  .company-rate {{ color: #ccc; font-size: 15px; font-weight: bold; }}
+  .company-name {{ color: #666; font-size: 9px; letter-spacing: 1px; }}
+  .company-rate {{ color: #aaa; font-size: 11px; font-weight: bold; }}
 </style>
-<div class="clock-wrap">
-  <div class="clock-label">AI Investment (Capex + R&D)</div>
-  <div class="clock-sublabel">Since ChatGPT Launch — November 30, 2022</div>
-  <div class="clock-value" id="clock">$0</div>
-  <div class="clock-sub">${annual_rate/1e9:.1f}B combined annual rate &nbsp;·&nbsp; ${rate_per_second:,.0f} per second</div>
-  <div class="company-row">
-    {"".join(f'<div class="company-item"><div class="company-name">{k}</div><div class="company-rate">${v/1e9:.1f}B/yr</div></div>' for k, v in sorted(by_company.items()))}
-  </div>
+<div class="clock-wrap-{clock_id}">
+  <div class="clock-label-{clock_id}">{label}</div>
+  <div class="clock-sublabel-{clock_id}">Since ChatGPT Launch — Nov 30, 2022</div>
+  <div class="clock-value-{clock_id}" id="{clock_id}">$0</div>
+  <div class="clock-rate-{clock_id}">${annual/1e9:.1f}B/yr &nbsp;·&nbsp; ${rate_per_sec:,.0f}/sec</div>
+  <div class="company-row-{clock_id}">{company_html}</div>
 </div>
 <script>
-  const startValue = {total_since_launch:.2f};
-  const ratePerMs = {rate_per_second / 1000:.6f};
-  const startTime = Date.now();
-
-  function fmt(n) {{
-    return '$' + Math.floor(n).toLocaleString('en-US');
-  }}
-
+  const startValue_{clock_id} = {total:.2f};
+  const ratePerMs_{clock_id} = {rate_per_sec / 1000:.6f};
+  const startTime_{clock_id} = Date.now();
+  function fmt_{clock_id}(n) {{ return '$' + Math.floor(n).toLocaleString('en-US'); }}
   setInterval(() => {{
-    const elapsed = Date.now() - startTime;
-    const val = startValue + elapsed * ratePerMs;
-    document.getElementById('clock').innerText = fmt(val);
+    const val = startValue_{clock_id} + (Date.now() - startTime_{clock_id}) * ratePerMs_{clock_id};
+    document.getElementById('{clock_id}').innerText = fmt_{clock_id}(val);
   }}, 100);
 </script>
-""", height=280)
+""", height=220)
 
-st.divider()
 
-# --- Model Section ---
-st.header("Crash Probability Model ⚠️ Experimental")
-st.warning(
-    "**This model is experimental and should not be used for investment decisions.** "
-    "It is a logistic regression trained on only 3–4 historical crash events (dot-com, GFC, 2022). "
-    "That is not enough data to build a reliable predictor. The output reflects whether current macro "
-    "conditions resemble historical pre-crash periods — not a true probability of a crash occurring. "
-    "AUC 0.804 on out-of-sample data, but with very few real events to validate against."
-)
+# ── Layout ────────────────────────────────────────────────────────────────────
 
-with st.spinner("Training model..."):
-    crash_prob, coefs, prob_history = load_model()
+st.set_page_config(page_title="Bubble Popper", layout="wide")
+st.title("Bubble Popper — AI Bubble Signal Dashboard")
+st.caption("Tracking macroeconomic and company fundamental signals to detect and time the AI bubble. Data updates daily via FRED and SEC EDGAR.")
 
-col_a, col_b = st.columns([1, 3])
-with col_a:
-    st.metric(
-        label="Current Crash Probability",
-        value=f"{crash_prob:.1%}",
-        help="Probability of a 30%+ NDX drawdown within 12 months, as of today.",
+tab_overview, tab_macro, tab_companies, tab_model = st.tabs([
+    "Overview", "Macro Signals", "Company Fundamentals", "Model"
+])
+
+# ── Overview tab ──────────────────────────────────────────────────────────────
+with tab_overview:
+    st.subheader("AI Investment Since ChatGPT Launch")
+    st.caption("Combined spend from MSFT, GOOGL, AMZN, META, and NVDA. Pro-rated from annual 10-K filings. AMZN does not report R&D separately — capex only for AMZN.")
+
+    spend = load_spend_data()
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        render_clock("Infrastructure (Capex)", spend["capex"]["total"], spend["capex"]["annual"], spend["capex"]["by_co"], "capex")
+    with col2:
+        render_clock("Research & Development", spend["rd"]["total"], spend["rd"]["annual"], spend["rd"]["by_co"], "rd")
+    with col3:
+        render_clock("Total (Capex + R&D)", spend["combined"]["total"], spend["combined"]["annual"], spend["combined"]["by_co"], "combined")
+
+    st.divider()
+
+    st.subheader("Crash Probability")
+    st.warning(
+        "**Experimental — not investment advice.** Logistic regression trained on 3–4 historical crash events. "
+        "Reflects whether current macro conditions resemble historical pre-crash periods."
     )
-    st.caption(f"As of {date.today()}")
+    with st.spinner("Training model..."):
+        crash_prob, coefs, prob_history = load_model()
 
-with col_b:
-    fig_prob = go.Figure()
-    fig_prob.add_trace(go.Scatter(
-        x=prob_history["date"], y=prob_history["crash_prob"],
-        mode="lines", name="Crash Probability",
-        line=dict(color="crimson", width=1.5),
-        fill="tozeroy", fillcolor="rgba(220,20,60,0.08)",
-    ))
-    fig_prob.add_hline(y=0.3, line_dash="dash", line_color="orange",
-                       annotation_text="30% threshold", annotation_position="top left")
-    fig_prob.update_layout(
-        xaxis_title="Date",
-        yaxis_title="Crash Probability",
-        yaxis_tickformat=".0%",
-        hovermode="x unified",
-        margin=dict(t=20),
+    m_col, _ = st.columns([1, 3])
+    with m_col:
+        st.metric("NDX 30%+ Drawdown in 12mo", f"{crash_prob:.1%}")
+        st.caption(f"As of {date.today()}")
+
+
+# ── Macro Signals tab ─────────────────────────────────────────────────────────
+with tab_macro:
+    st.subheader("Macro Signals (FRED)")
+    st.caption("Daily, weekly, and monthly macro data from the Federal Reserve. Enable z-score normalization to overlay metrics with different units on the same chart.")
+
+    date_range = st.slider(
+        "Date range",
+        min_value=date(2000, 1, 1),
+        max_value=date.today(),
+        value=(date(2015, 1, 1), date.today()),
     )
-    st.plotly_chart(fig_prob, use_container_width=True)
+    start_date, end_date = date_range
 
-st.subheader("Feature Importance")
-st.caption("Model coefficients — positive means the feature increases crash probability, negative means it reduces it.")
-fig_coef = px.bar(
-    coefs.head(12).reset_index(),
-    x="index", y=0,
-    labels={"index": "Feature", 0: "Coefficient"},
-    color=coefs.head(12).values,
-    color_continuous_scale=["green", "white", "crimson"],
-    color_continuous_midpoint=0,
-)
-fig_coef.update_layout(showlegend=False, coloraxis_showscale=False, margin=dict(t=20))
-st.plotly_chart(fig_coef, use_container_width=True)
+    selected_fred = st.multiselect(
+        "Select FRED metrics",
+        options=list(FRED_METRICS.keys()),
+        default=["yield_curve_10y2y", "fed_funds", "m2_yoy_growth", "financial_conditions"],
+        format_func=lambda x: FRED_METRICS[x],
+    )
 
-st.divider()
+    if selected_fred:
+        df_fred = load_observations(selected_fred, start_date, end_date)
+        if not df_fred.empty:
+            normalize = st.checkbox("Normalize to z-score", value=True)
+            if normalize:
+                def zscore(s):
+                    return (s - s.mean()) / s.std()
+                df_fred["raw_value"] = df_fred.groupby("metric_id")["raw_value"].transform(zscore)
+                y_label = "Z-Score"
+            else:
+                y_label = "Value"
 
-# --- Sidebar controls ---
-st.sidebar.header("Controls")
+            df_fred["metric_label"] = df_fred["metric_id"].map(FRED_METRICS)
+            fig = px.line(df_fred, x="obs_date", y="raw_value", color="metric_label",
+                          labels={"obs_date": "Date", "raw_value": y_label, "metric_label": "Metric"})
+            fig.update_layout(legend_title_text="", hovermode="x unified")
+            st.plotly_chart(fig, use_container_width=True)
 
-date_range = st.sidebar.slider(
-    "Date range",
-    min_value=date(2000, 1, 1),
-    max_value=date.today(),
-    value=(date(2015, 1, 1), date.today()),
-)
-start_date, end_date = date_range
-
-# --- FRED Section ---
-st.header("Macro Signals (FRED)")
-st.caption("Daily and weekly macro data from the Federal Reserve. Select any combination of series. Enable z-score normalization to overlay metrics with different units on the same chart.")
-
-selected_fred = st.multiselect(
-    "Select FRED metrics",
-    options=list(FRED_METRICS.keys()),
-    default=["yield_curve_10y2y", "fed_funds", "m2_yoy_growth", "financial_conditions"],
-    format_func=lambda x: FRED_METRICS[x],
-)
-
-if selected_fred:
-    df_fred = load_observations(selected_fred, start_date, end_date)
-    if not df_fred.empty:
-        normalize = st.checkbox("Normalize to z-score (compare on same scale)", value=True)
-
-        if normalize:
+        st.subheader("Composite Bubble Signal")
+        st.caption("Z-score average of selected metrics. Above zero = conditions more bubble-like than historical average.")
+        df_signal = load_observations(selected_fred, start_date, end_date)
+        if not df_signal.empty:
             def zscore(s):
                 return (s - s.mean()) / s.std()
-            df_fred["raw_value"] = df_fred.groupby("metric_id")["raw_value"].transform(zscore)
-            y_label = "Z-Score"
+            df_signal["z"] = df_signal.groupby("metric_id")["raw_value"].transform(zscore)
+            composite = df_signal.groupby("obs_date")["z"].mean().reset_index().rename(columns={"z": "signal"})
+            fig3 = go.Figure()
+            fig3.add_trace(go.Scatter(
+                x=composite["obs_date"], y=composite["signal"],
+                mode="lines", name="Bubble Signal",
+                line=dict(color="crimson", width=2),
+                fill="tozeroy", fillcolor="rgba(220,20,60,0.1)",
+            ))
+            fig3.add_hline(y=0, line_dash="dash", line_color="gray")
+            fig3.update_layout(xaxis_title="Date", yaxis_title="Signal (Z-Score)", hovermode="x unified")
+            st.plotly_chart(fig3, use_container_width=True)
+
+
+# ── Company Fundamentals tab ──────────────────────────────────────────────────
+with tab_companies:
+    st.subheader("Company Fundamentals")
+    st.caption("Annual figures from SEC 10-K filings for MSFT, GOOGL, AMZN, META, and NVDA. Balance sheet metrics are quarterly. AMZN does not report R&D separately.")
+
+    date_range_co = st.slider(
+        "Date range",
+        min_value=date(2000, 1, 1),
+        max_value=date.today(),
+        value=(date(2010, 1, 1), date.today()),
+        key="co_date",
+    )
+    start_co, end_co = date_range_co
+
+    col1, col2 = st.columns(2)
+    with col1:
+        selected_companies = st.multiselect(
+            "Companies", options=COMPANIES, default=COMPANIES, format_func=str.upper,
+        )
+    with col2:
+        selected_metric = st.selectbox(
+            "Metric", options=list(COMPANY_METRICS.keys()), format_func=lambda x: COMPANY_METRICS[x],
+        )
+
+    if selected_companies and selected_metric:
+        metric_ids = [f"{c}_{selected_metric}" for c in selected_companies]
+        df_edgar = load_observations(metric_ids, start_co, end_co)
+        if not df_edgar.empty:
+            df_edgar["company"] = df_edgar["metric_id"].str.split("_").str[0].str.upper()
+            fig2 = px.line(df_edgar, x="obs_date", y="raw_value", color="company",
+                           labels={"obs_date": "Date", "raw_value": COMPANY_METRICS[selected_metric], "company": "Company"})
+            fig2.update_layout(legend_title_text="", hovermode="x unified")
+            st.plotly_chart(fig2, use_container_width=True)
         else:
-            y_label = "Value"
+            st.info("No data for selected range.")
 
-        df_fred["metric_label"] = df_fred["metric_id"].map(FRED_METRICS)
-        fig = px.line(
-            df_fred, x="obs_date", y="raw_value", color="metric_label",
-            labels={"obs_date": "Date", "raw_value": y_label, "metric_label": "Metric"},
-        )
-        fig.update_layout(legend_title_text="", hovermode="x unified")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No data for selected range.")
 
-# --- EDGAR Section ---
-st.header("Company Fundamentals")
-st.caption("Annual figures from SEC 10-K filings for MSFT, GOOGL, AMZN, META, and NVDA. Balance sheet metrics (debt/assets) are quarterly. Note: AMZN does not report R&D as a separate line item.")
-
-col1, col2 = st.columns(2)
-with col1:
-    selected_companies = st.multiselect(
-        "Companies",
-        options=COMPANIES,
-        default=COMPANIES,
-        format_func=str.upper,
-    )
-with col2:
-    selected_edgar_metric = st.selectbox(
-        "Metric",
-        options=list(COMPANY_METRICS.keys()),
-        format_func=lambda x: COMPANY_METRICS[x],
+# ── Model tab ─────────────────────────────────────────────────────────────────
+with tab_model:
+    st.subheader("Crash Probability Model")
+    st.warning(
+        "**Experimental — not investment advice.** Logistic regression trained on 3–4 historical crash events (dot-com, GFC, 2022). "
+        "Output reflects whether current macro conditions resemble historical pre-crash periods. AUC 0.781 out-of-sample."
     )
 
-if selected_companies and selected_edgar_metric:
-    metric_ids = [f"{c}_{selected_edgar_metric}" for c in selected_companies]
-    df_edgar = load_observations(metric_ids, start_date, end_date)
+    with st.spinner("Training model..."):
+        crash_prob, coefs, prob_history = load_model()
 
-    if not df_edgar.empty:
-        df_edgar["company"] = df_edgar["metric_id"].str.split("_").str[0].str.upper()
-        fig2 = px.line(
-            df_edgar, x="obs_date", y="raw_value", color="company",
-            labels={
-                "obs_date": "Date",
-                "raw_value": COMPANY_METRICS[selected_edgar_metric],
-                "company": "Company",
-            },
-        )
-        fig2.update_layout(legend_title_text="", hovermode="x unified")
-        st.plotly_chart(fig2, use_container_width=True)
-    else:
-        st.info("No data for selected range.")
+    col_a, col_b = st.columns([1, 3])
+    with col_a:
+        st.metric("NDX 30%+ Drawdown in 12mo", f"{crash_prob:.1%}")
+        st.caption(f"As of {date.today()}")
 
-# --- Composite Signal ---
-st.header("Composite Bubble Signal")
-st.caption("Z-score average of all selected FRED metrics averaged into a single index. Above zero = conditions are more bubble-like than the historical average. The signal is directional — it shows where we are in the cycle relative to history, not when the bubble pops.")
-
-if selected_fred:
-    df_signal = load_observations(selected_fred, start_date, end_date)
-    if not df_signal.empty:
-        def zscore(s):
-            return (s - s.mean()) / s.std()
-        df_signal["z"] = df_signal.groupby("metric_id")["raw_value"].transform(zscore)
-        composite = (
-            df_signal.groupby("obs_date")["z"]
-            .mean()
-            .reset_index()
-            .rename(columns={"z": "signal"})
-        )
-        fig3 = go.Figure()
-        fig3.add_trace(go.Scatter(
-            x=composite["obs_date"], y=composite["signal"],
-            mode="lines", name="Bubble Signal",
-            line=dict(color="crimson", width=2),
-            fill="tozeroy", fillcolor="rgba(220,20,60,0.1)",
+    with col_b:
+        fig_prob = go.Figure()
+        fig_prob.add_trace(go.Scatter(
+            x=prob_history["date"], y=prob_history["crash_prob"],
+            mode="lines", name="Crash Probability",
+            line=dict(color="crimson", width=1.5),
+            fill="tozeroy", fillcolor="rgba(220,20,60,0.08)",
         ))
-        fig3.add_hline(y=0, line_dash="dash", line_color="gray")
-        fig3.update_layout(
-            xaxis_title="Date",
-            yaxis_title="Signal (Z-Score)",
-            hovermode="x unified",
+        fig_prob.add_hline(y=0.3, line_dash="dash", line_color="orange",
+                           annotation_text="30% threshold", annotation_position="top left")
+        fig_prob.update_layout(
+            xaxis_title="Date", yaxis_title="Crash Probability",
+            yaxis_tickformat=".0%", hovermode="x unified", margin=dict(t=20),
         )
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig_prob, use_container_width=True)
+
+    st.subheader("Feature Importance")
+    st.caption("Model coefficients — positive increases crash probability, negative reduces it.")
+    fig_coef = px.bar(
+        coefs.head(12).reset_index(), x="index", y=0,
+        labels={"index": "Feature", 0: "Coefficient"},
+        color=coefs.head(12).values,
+        color_continuous_scale=["green", "white", "crimson"],
+        color_continuous_midpoint=0,
+    )
+    fig_coef.update_layout(showlegend=False, coloraxis_showscale=False, margin=dict(t=20))
+    st.plotly_chart(fig_coef, use_container_width=True)
