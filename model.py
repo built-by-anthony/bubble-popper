@@ -18,17 +18,24 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 LOOKFORWARD_DAYS = 365
 ENSEMBLE_THRESHOLDS = [0.15, 0.20, 0.25]
 
+# S&P 500 — deep history back to 1928, captures ~2x the crash events of NDX (post-1985 only).
+# AI megacaps (MSFT/GOOGL/AMZN/META/NVDA) are ~30% of the S&P, so this is still
+# directly relevant to the AI bubble while doubling the training event count.
+LABEL_INDEX = "^GSPC"
+
+# Deep-history features only — every one of these exists back to at least 1976,
+# so the binding constraint becomes yield_curve_10y2y (1976) instead of VIX (1990).
+# That adds the 1980, 1982, 1987, and 1990 crashes to the training set.
+# Dropped from training (kept on dashboard as context): NFCI (1971), BAA10Y (1986),
+# VIX (1990), oil_wti (1986). The newer ones become Phase 3 features once we have
+# proper time-varying availability handling.
 FRED_FEATURES = [
-    "yield_curve_10y2y",
-    "fed_funds",
-    "financial_conditions",
-    "m2_yoy_growth",
-    "credit_spreads_baa",
-    "vix",
-    "credit_growth",
-    "recession_indicator",
-    "oil_wti",
-    "shiller_cape",
+    "yield_curve_10y2y",    # 1976
+    "fed_funds",            # 1954
+    "m2_yoy_growth",        # 1960
+    "credit_growth",        # 1973
+    "recession_indicator",  # 1854
+    "shiller_cape",         # 1871
 ]
 
 CAPEX_TICKERS = ["msft", "googl", "amzn", "meta", "nvda"]
@@ -37,22 +44,18 @@ BINARY_FEATURES = {"recession_indicator"}
 CONTINUOUS_FEATURES = [f for f in FRED_FEATURES if f not in BINARY_FEATURES]
 
 FEATURE_COLS = [
-    "yield_curve_10y2y", "yield_curve_10y2y_chg_90d", "yield_curve_10y2y_zscore",
-    "fed_funds", "fed_funds_chg_90d", "fed_funds_chg_365d",
-    "financial_conditions", "financial_conditions_chg_90d", "financial_conditions_zscore",
-    "m2_yoy_growth", "m2_yoy_growth_chg_90d",
-    "credit_spreads_baa", "credit_spreads_baa_chg_90d", "credit_spreads_baa_zscore",
-    "vix", "vix_chg_90d", "vix_zscore",
-    "credit_growth", "credit_growth_chg_90d", "credit_growth_chg_365d", "credit_growth_zscore",
+    "yield_curve_10y2y", "yield_curve_10y2y_chg_90d",
+    "fed_funds", "fed_funds_chg_365d",
+    "m2_yoy_growth",
+    "credit_growth", "credit_growth_chg_365d",
     "recession_indicator",
-    "oil_wti", "oil_wti_chg_90d", "oil_wti_chg_365d", "oil_wti_zscore",
     "shiller_cape",
 ]
 
 
 def fetch_ndx(threshold: float) -> pd.DataFrame:
-    """Download Nasdaq 100 daily close, compute forward max drawdown label."""
-    ticker = yf.Ticker("^NDX")
+    """Download index daily close (S&P 500 by default), compute forward max drawdown label."""
+    ticker = yf.Ticker(LABEL_INDEX)
     hist = ticker.history(period="max")
     hist.index = hist.index.tz_localize(None).normalize()
     prices = hist["Close"].rename("price")
