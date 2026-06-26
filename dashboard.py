@@ -268,7 +268,7 @@ with tab_overview:
         st.markdown(f"""
 <div style="text-align:center; padding: 32px 0 16px 0;">
   <div style="color:#888; font-size:13px; letter-spacing:2px; text-transform:uppercase; margin-bottom:8px;">
-    Probability of 30%+ Nasdaq Crash in Next 12 Months
+    Probability of 20%+ Nasdaq Crash in Next 12 Months
   </div>
   <div style="color:#ff4b4b; font-size:80px; font-weight:bold; line-height:1; font-family:'Courier New',monospace;">
     {crash_prob:.1%}
@@ -378,7 +378,7 @@ with tab_model:
     st.subheader("Crash Probability Model")
     st.warning(
         "**Experimental — not investment advice.** Logistic regression trained on 3–4 historical crash events (dot-com, GFC, 2022). "
-        "Output reflects whether current macro conditions resemble historical pre-crash periods. AUC 0.781 out-of-sample."
+        "Output reflects whether current macro conditions resemble historical pre-crash periods. AUC 0.669 out-of-sample."
     )
 
     with st.spinner("Training model..."):
@@ -386,7 +386,7 @@ with tab_model:
 
     col_a, col_b = st.columns([1, 3])
     with col_a:
-        st.metric("NDX 30%+ Drawdown in 12mo", f"{crash_prob:.1%}")
+        st.metric("NDX 20%+ Drawdown in 12mo", f"{crash_prob:.1%}")
         st.caption(f"As of {date.today()}")
 
     with col_b:

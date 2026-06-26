@@ -16,7 +16,7 @@ load_dotenv()
 DATABASE_URL = os.environ["DATABASE_URL"]
 
 LOOKFORWARD_DAYS = 365
-DRAWDOWN_THRESHOLD = 0.30
+DRAWDOWN_THRESHOLD = 0.20
 
 FRED_FEATURES = [
     "yield_curve_10y2y",
@@ -184,7 +184,7 @@ def current_signal(pipe: Pipeline, dataset: pd.DataFrame) -> float:
     features = [c for c in FEATURE_COLS if c in dataset.columns]
     latest = dataset[features].iloc[[-1]]
     prob = pipe.predict_proba(latest)[0, 1]
-    print(f"\nCurrent crash probability (30% NDX drawdown in 12mo): {prob:.1%}")
+    print(f"\nCurrent crash probability (20% NDX drawdown in 12mo): {prob:.1%}")
     print(f"As of: {dataset.index[-1].date()}")
     return prob
 
