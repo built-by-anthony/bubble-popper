@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import date, datetime, timezone
+from datetime import date
 
 import psycopg
 import requests
@@ -28,9 +28,10 @@ UPSERT_SQL = """
     INSERT INTO fact_observation (metric_id, obs_date, raw_value, source, series_id, valid_as_of)
     VALUES (%s, %s, %s, 'FRED', %s, %s)
     ON CONFLICT (metric_id, obs_date)
-    DO UPDATE SET raw_value  = EXCLUDED.raw_value,
-                  series_id  = EXCLUDED.series_id,
+    DO UPDATE SET raw_value   = EXCLUDED.raw_value,
+                  series_id   = EXCLUDED.series_id,
                   valid_as_of = EXCLUDED.valid_as_of
+    WHERE fact_observation.valid_as_of < EXCLUDED.valid_as_of
 """
 
 
@@ -60,7 +61,7 @@ def compute_m2_yoy(observations: list[dict], valid_as_of: datetime) -> list[tupl
 
 
 def ingest_fred():
-    valid_as_of = datetime.now(timezone.utc)
+    valid_as_of = date.today()
 
     with psycopg.connect(DATABASE_URL) as conn:
         with conn.cursor() as cur:
@@ -78,12 +79,12 @@ def ingest_fred():
                 ]
 
                 cur.executemany(UPSERT_SQL, rows)
-                print(f"  Upserted {len(rows)} rows", flush=True)
+                print(f"  Wrote {cur.rowcount} rows (fetched {len(rows)} from FRED)", flush=True)
 
                 if metric_id == "m2_money_supply":
                     yoy_rows = compute_m2_yoy(observations, valid_as_of)
                     cur.executemany(UPSERT_SQL, yoy_rows)
-                    print(f"  Upserted {len(yoy_rows)} rows for m2_yoy_growth", flush=True)
+                    print(f"  Wrote {cur.rowcount} rows for m2_yoy_growth", flush=True)
 
                 time.sleep(0.5)
 
