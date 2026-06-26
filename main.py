@@ -63,7 +63,7 @@ def compute_m2_yoy(observations: list[dict], valid_as_of: datetime) -> list[tupl
 def ingest_fred():
     valid_as_of = date.today()
 
-    with psycopg.connect(DATABASE_URL) as conn:
+    with psycopg.connect(DATABASE_URL, prepare_threshold=None) as conn:
         with conn.cursor() as cur:
             for metric in METRICS:
                 metric_id = metric["metric_id"]
