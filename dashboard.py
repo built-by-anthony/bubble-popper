@@ -29,6 +29,7 @@ FRED_METRICS = {
     "vix":                                  "VIX",
     "credit_growth":                        "Credit Growth (TOTLL)",
     "recession_indicator":                  "Recession Indicator (USREC)",
+    "shiller_cape":                         "Shiller CAPE",
 }
 
 COMPANY_METRICS = {

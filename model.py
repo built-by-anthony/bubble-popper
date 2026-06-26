@@ -28,6 +28,7 @@ FRED_FEATURES = [
     "credit_growth",
     "recession_indicator",
     "oil_wti",
+    "shiller_cape",
 ]
 
 CAPEX_TICKERS = ["msft", "googl", "amzn", "meta", "nvda"]
@@ -45,6 +46,7 @@ FEATURE_COLS = [
     "credit_growth", "credit_growth_chg_90d", "credit_growth_chg_365d", "credit_growth_zscore",
     "recession_indicator",
     "oil_wti", "oil_wti_chg_90d", "oil_wti_chg_365d", "oil_wti_zscore",
+    "shiller_cape",
 ]
 
 
@@ -77,7 +79,7 @@ def fetch_ndx(threshold: float) -> pd.DataFrame:
 def fetch_features() -> pd.DataFrame:
     """Load FRED signals from DB, resample to daily, forward-fill."""
     capex_ids = [f"{t}_capex" for t in CAPEX_TICKERS]
-    all_ids = FRED_FEATURES + capex_ids
+    all_ids = FRED_FEATURES + capex_ids + ["shiller_cape"]
 
     with psycopg.connect(DATABASE_URL, prepare_threshold=None) as conn:
         with conn.cursor() as cur:
@@ -137,7 +139,7 @@ def _train_single(dataset: pd.DataFrame, verbose: bool = False) -> tuple[Pipelin
 
     pipe = Pipeline([
         ("scaler", StandardScaler()),
-        ("clf", LogisticRegression(class_weight="balanced", max_iter=1000, C=0.1)),
+        ("clf", LogisticRegression(class_weight="balanced", max_iter=1000, C=0.05)),
     ])
     pipe.fit(X_train, y_train)
 
