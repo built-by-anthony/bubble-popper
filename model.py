@@ -27,6 +27,9 @@ FRED_FEATURES = [
     "vix",
 ]
 
+# Combined hyperscaler capex — annual, forward-filled daily
+CAPEX_TICKERS = ["msft", "googl", "amzn", "meta", "nvda"]
+
 
 def fetch_ndx() -> pd.DataFrame:
     """Download Nasdaq 100 daily close, compute forward max drawdown label."""
@@ -57,10 +60,13 @@ def fetch_ndx() -> pd.DataFrame:
 
 
 def fetch_features() -> pd.DataFrame:
-    """Load FRED signals from DB, resample to daily, forward-fill."""
+    """Load FRED signals + capex from DB, resample to daily, forward-fill."""
+    capex_ids = [f"{t}_capex" for t in CAPEX_TICKERS]
+    all_ids = FRED_FEATURES + capex_ids
+
     with psycopg.connect(DATABASE_URL, prepare_threshold=None) as conn:
         with conn.cursor() as cur:
-            placeholders = ", ".join(["%s"] * len(FRED_FEATURES))
+            placeholders = ", ".join(["%s"] * len(all_ids))
             cur.execute(
                 f"""
                 SELECT metric_id, obs_date, raw_value
@@ -68,15 +74,22 @@ def fetch_features() -> pd.DataFrame:
                 WHERE metric_id IN ({placeholders})
                 ORDER BY obs_date
                 """,
-                FRED_FEATURES,
+                all_ids,
             )
             rows = cur.fetchall()
 
     df = pd.DataFrame(rows, columns=["metric_id", "obs_date", "raw_value"])
     df["obs_date"] = pd.to_datetime(df["obs_date"])
+
+    # Sum all capex into a single combined column
+    capex_df = df[df["metric_id"].isin(capex_ids)].copy()
+    if not capex_df.empty:
+        capex_agg = capex_df.groupby("obs_date")["raw_value"].sum().reset_index()
+        capex_agg["metric_id"] = "hyperscaler_capex"
+        df = pd.concat([df[~df["metric_id"].isin(capex_ids)], capex_agg], ignore_index=True)
+
     pivoted = df.pivot_table(index="obs_date", columns="metric_id", values="raw_value")
 
-    # Resample to daily and forward-fill (handles weekly/monthly series)
     daily_idx = pd.date_range(pivoted.index.min(), pivoted.index.max(), freq="D")
     pivoted = pivoted.reindex(daily_idx).ffill()
     pivoted.index.name = "date"
@@ -84,8 +97,8 @@ def fetch_features() -> pd.DataFrame:
 
 
 def engineer_features(features: pd.DataFrame) -> pd.DataFrame:
-    """Add rate-of-change and rolling signals."""
-    df = features.copy()
+    """Add rate-of-change and rolling signals for FRED features only."""
+    df = features[FRED_FEATURES].copy()
 
     for col in FRED_FEATURES:
         if col not in df.columns:

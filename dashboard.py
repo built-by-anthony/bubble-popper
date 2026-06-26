@@ -1,11 +1,12 @@
 import os
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import psycopg
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 from model import FEATURE_COLS, build_dataset, train, current_signal
@@ -57,6 +58,23 @@ def load_model():
 
 
 @st.cache_data(ttl=3600)
+def load_capex_rate() -> tuple[float, dict]:
+    """Return combined annual capex rate and per-company breakdown from most recent filings."""
+    with psycopg.connect(DATABASE_URL, prepare_threshold=None) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (metric_id) metric_id, obs_date, raw_value
+                FROM fact_observation
+                WHERE metric_id LIKE '%_capex'
+                ORDER BY metric_id, obs_date DESC
+            """)
+            rows = cur.fetchall()
+    by_company = {row[0].replace("_capex", "").upper(): row[2] for row in rows}
+    annual_total = sum(by_company.values())
+    return annual_total, by_company
+
+
+@st.cache_data(ttl=3600)
 def load_observations(metric_ids: list[str], start: date, end: date) -> pd.DataFrame:
     placeholders = ", ".join(["%s"] * len(metric_ids))
     sql = f"""
@@ -85,6 +103,95 @@ Data updates daily via automated ingestion from **FRED** (Federal Reserve Econom
 - **Company Fundamentals** — compare R&D spend, margins, and leverage across the 5 major AI companies
 - **Composite Bubble Signal** — a single index averaging all selected macro signals; above zero means conditions are more bubble-like than the historical average
 """)
+
+# --- AI Spend Clock ---
+st.header("AI Infrastructure Spend Clock")
+st.caption("Combined annual capex from MSFT, GOOGL, AMZN, META, and NVDA — the five companies building AI infrastructure. Based on most recent 10-K filings. Ticking up from Jan 1 of the current year.")
+
+annual_rate, by_company = load_capex_rate()
+seconds_per_year = 365.25 * 24 * 3600
+rate_per_second = annual_rate / seconds_per_year
+
+# YTD seconds elapsed since Jan 1
+now = datetime.utcnow()
+jan1 = datetime(now.year, 1, 1)
+ytd_seconds = (now - jan1).total_seconds()
+ytd_spend = ytd_seconds * rate_per_second
+
+components.html(f"""
+<style>
+  .clock-wrap {{
+    background: #0e1117;
+    border-radius: 12px;
+    padding: 32px 40px;
+    text-align: center;
+    font-family: 'Courier New', monospace;
+  }}
+  .clock-label {{
+    color: #888;
+    font-size: 14px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }}
+  .clock-value {{
+    color: #ff4b4b;
+    font-size: 52px;
+    font-weight: bold;
+    letter-spacing: 2px;
+  }}
+  .clock-sub {{
+    color: #555;
+    font-size: 13px;
+    margin-top: 12px;
+  }}
+  .company-row {{
+    display: flex;
+    justify-content: center;
+    gap: 32px;
+    margin-top: 20px;
+    flex-wrap: wrap;
+  }}
+  .company-item {{
+    text-align: center;
+  }}
+  .company-name {{
+    color: #888;
+    font-size: 11px;
+    letter-spacing: 1px;
+  }}
+  .company-rate {{
+    color: #ccc;
+    font-size: 15px;
+    font-weight: bold;
+  }}
+</style>
+<div class="clock-wrap">
+  <div class="clock-label">AI Infrastructure Spend — Year to Date {now.year}</div>
+  <div class="clock-value" id="clock">$0</div>
+  <div class="clock-sub">${annual_rate/1e9:.1f}B combined annual rate &nbsp;·&nbsp; ${rate_per_second:,.0f} per second</div>
+  <div class="company-row">
+    {"".join(f'<div class="company-item"><div class="company-name">{k}</div><div class="company-rate">${v/1e9:.1f}B/yr</div></div>' for k, v in sorted(by_company.items()))}
+  </div>
+</div>
+<script>
+  const startValue = {ytd_spend:.2f};
+  const ratePerMs = {rate_per_second / 1000:.6f};
+  const startTime = Date.now();
+
+  function fmt(n) {{
+    return '$' + Math.floor(n).toLocaleString('en-US');
+  }}
+
+  setInterval(() => {{
+    const elapsed = Date.now() - startTime;
+    const val = startValue + elapsed * ratePerMs;
+    document.getElementById('clock').innerText = fmt(val);
+  }}, 100);
+</script>
+""", height=260)
+
+st.divider()
 
 # --- Model Section ---
 st.header("Crash Probability Model")

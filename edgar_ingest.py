@@ -24,6 +24,7 @@ FLOW_CONCEPTS = {
     "revenue":    ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet"],
     "rd_expense": ["ResearchAndDevelopmentExpense"],
     "net_income": ["NetIncomeLoss"],
+    "capex":      ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"],
 }
 
 # Point-in-time — safe to pull from 10-K and 10-Q
@@ -90,6 +91,8 @@ def compute_derived(
     long_term_debt = balance.get("long_term_debt", {})
     total_assets = balance.get("total_assets", {})
 
+    capex = flow.get("capex", {})
+
     for end_date, rev in revenue.items():
         if rev <= 0:
             continue
@@ -101,6 +104,10 @@ def compute_derived(
             val = net_income[end_date] / rev * 100
             if -100 <= val <= 100:
                 rows.append((f"{ticker}_net_margin", end_date, val, ticker.upper(), valid_as_of))
+
+    for end_date, capex_val in capex.items():
+        if capex_val > 0:
+            rows.append((f"{ticker}_capex", end_date, capex_val, ticker.upper(), valid_as_of))
 
     for end_date, assets in total_assets.items():
         if assets <= 0:
