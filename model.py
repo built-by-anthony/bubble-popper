@@ -16,7 +16,7 @@ load_dotenv()
 DATABASE_URL = os.environ["DATABASE_URL"]
 
 LOOKFORWARD_DAYS = 365
-DRAWDOWN_THRESHOLD = 0.20
+ENSEMBLE_THRESHOLDS = [0.15, 0.20, 0.25]
 
 FRED_FEATURES = [
     "yield_curve_10y2y",
@@ -27,25 +27,38 @@ FRED_FEATURES = [
     "vix",
     "credit_growth",
     "recession_indicator",
+    "oil_wti",
 ]
 
-# Combined hyperscaler capex — annual, forward-filled daily
 CAPEX_TICKERS = ["msft", "googl", "amzn", "meta", "nvda"]
 
+BINARY_FEATURES = {"recession_indicator"}
+CONTINUOUS_FEATURES = [f for f in FRED_FEATURES if f not in BINARY_FEATURES]
 
-def fetch_ndx() -> pd.DataFrame:
+FEATURE_COLS = [
+    "yield_curve_10y2y", "yield_curve_10y2y_chg_90d", "yield_curve_10y2y_zscore",
+    "fed_funds", "fed_funds_chg_90d", "fed_funds_chg_365d",
+    "financial_conditions", "financial_conditions_chg_90d", "financial_conditions_zscore",
+    "m2_yoy_growth", "m2_yoy_growth_chg_90d",
+    "credit_spreads_baa", "credit_spreads_baa_chg_90d", "credit_spreads_baa_zscore",
+    "vix", "vix_chg_90d", "vix_zscore",
+    "credit_growth", "credit_growth_chg_90d", "credit_growth_chg_365d", "credit_growth_zscore",
+    "recession_indicator",
+    "oil_wti", "oil_wti_chg_90d", "oil_wti_chg_365d", "oil_wti_zscore",
+]
+
+
+def fetch_ndx(threshold: float) -> pd.DataFrame:
     """Download Nasdaq 100 daily close, compute forward max drawdown label."""
     ticker = yf.Ticker("^NDX")
     hist = ticker.history(period="max")
     hist.index = hist.index.tz_localize(None).normalize()
     prices = hist["Close"].rename("price")
 
-    # For each date, compute max drawdown over next 365 days
     labels = []
     price_arr = prices.values
-    dates = prices.index
 
-    for i, _ in enumerate(dates):
+    for i in range(len(price_arr)):
         future = price_arr[i: i + LOOKFORWARD_DAYS + 1]
         if len(future) < LOOKFORWARD_DAYS // 2:
             labels.append(np.nan)
@@ -53,16 +66,16 @@ def fetch_ndx() -> pd.DataFrame:
         peak = future[0]
         trough = future.min()
         drawdown = (peak - trough) / peak
-        labels.append(1 if drawdown >= DRAWDOWN_THRESHOLD else 0)
+        labels.append(1 if drawdown >= threshold else 0)
 
-    df = pd.DataFrame({"price": price_arr, "label": labels}, index=dates)
+    df = pd.DataFrame({"price": price_arr, "label": labels}, index=prices.index)
     df = df.dropna(subset=["label"])
     df["label"] = df["label"].astype(int)
     return df
 
 
 def fetch_features() -> pd.DataFrame:
-    """Load FRED signals + capex from DB, resample to daily, forward-fill."""
+    """Load FRED signals from DB, resample to daily, forward-fill."""
     capex_ids = [f"{t}_capex" for t in CAPEX_TICKERS]
     all_ids = FRED_FEATURES + capex_ids
 
@@ -83,7 +96,6 @@ def fetch_features() -> pd.DataFrame:
     df = pd.DataFrame(rows, columns=["metric_id", "obs_date", "raw_value"])
     df["obs_date"] = pd.to_datetime(df["obs_date"])
 
-    # Sum all capex into a single combined column
     capex_df = df[df["metric_id"].isin(capex_ids)].copy()
     if not capex_df.empty:
         capex_agg = capex_df.groupby("obs_date")["raw_value"].sum().reset_index()
@@ -91,15 +103,10 @@ def fetch_features() -> pd.DataFrame:
         df = pd.concat([df[~df["metric_id"].isin(capex_ids)], capex_agg], ignore_index=True)
 
     pivoted = df.pivot_table(index="obs_date", columns="metric_id", values="raw_value")
-
     daily_idx = pd.date_range(pivoted.index.min(), pivoted.index.max(), freq="D")
     pivoted = pivoted.reindex(daily_idx).ffill()
     pivoted.index.name = "date"
     return pivoted
-
-
-BINARY_FEATURES = {"recession_indicator"}
-CONTINUOUS_FEATURES = [f for f in FRED_FEATURES if f not in BINARY_FEATURES]
 
 
 def engineer_features(features: pd.DataFrame) -> pd.DataFrame:
@@ -117,41 +124,8 @@ def engineer_features(features: pd.DataFrame) -> pd.DataFrame:
     return df.dropna()
 
 
-def build_dataset() -> pd.DataFrame:
-    print("Fetching NDX price history...", flush=True)
-    ndx = fetch_ndx()
-
-    print("Fetching FRED features from DB...", flush=True)
-    features = fetch_features()
-
-    print("Engineering features...", flush=True)
-    features = engineer_features(features)
-
-    dataset = ndx.join(features, how="inner")
-    dataset = dataset.dropna()
-
-    print(f"Dataset: {len(dataset)} rows, {dataset['label'].mean():.1%} positive (crash within 12mo)")
-    return dataset
-
-
-FEATURE_COLS = [
-    "yield_curve_10y2y", "yield_curve_10y2y_chg_90d", "yield_curve_10y2y_zscore",
-    "fed_funds", "fed_funds_chg_90d", "fed_funds_chg_365d",
-    "financial_conditions", "financial_conditions_chg_90d", "financial_conditions_zscore",
-    "m2_yoy_growth", "m2_yoy_growth_chg_90d",
-    "credit_spreads_baa", "credit_spreads_baa_chg_90d", "credit_spreads_baa_zscore",
-    "vix", "vix_chg_90d", "vix_zscore",
-    "credit_growth", "credit_growth_chg_90d", "credit_growth_chg_365d", "credit_growth_zscore",
-    "recession_indicator",
-]
-
-
-def train(dataset: pd.DataFrame) -> tuple[Pipeline, pd.DataFrame]:
-    """
-    Train-test split respecting time order (no lookahead).
-    First 80% of rows = train, last 20% = test.
-    Returns fitted pipeline and test results.
-    """
+def _train_single(dataset: pd.DataFrame, verbose: bool = False) -> tuple[Pipeline, float]:
+    """Train one logistic regression model, return pipeline and test AUC."""
     dataset = dataset.sort_index()
     features = [c for c in FEATURE_COLS if c in dataset.columns]
     X = dataset[features]
@@ -169,27 +143,84 @@ def train(dataset: pd.DataFrame) -> tuple[Pipeline, pd.DataFrame]:
 
     proba = pipe.predict_proba(X_test)[:, 1]
     auc = roc_auc_score(y_test, proba)
-    print(f"\nTest AUC: {auc:.3f}")
-    print(classification_report(y_test, pipe.predict(X_test)))
 
-    results = X_test.copy()
-    results["label"] = y_test
+    if verbose:
+        print(f"  AUC: {auc:.3f}")
+        print(classification_report(y_test, pipe.predict(X_test)))
+
+    return pipe, auc
+
+
+def build_dataset() -> pd.DataFrame:
+    """Compatibility shim — returns dataset at default threshold (0.20)."""
+    print("Fetching NDX price history...", flush=True)
+    ndx = fetch_ndx(0.20)
+    print("Fetching FRED features from DB...", flush=True)
+    features = engineer_features(fetch_features())
+    dataset = ndx.join(features, how="inner").dropna()
+    print(f"Dataset: {len(dataset)} rows, {dataset['label'].mean():.1%} positive")
+    return dataset
+
+
+def train(dataset: pd.DataFrame) -> tuple[Pipeline, pd.DataFrame]:
+    """Compatibility shim used by dashboard's load_model()."""
+    pipe, auc = _train_single(dataset, verbose=True)
+    features = [c for c in FEATURE_COLS if c in dataset.columns]
+    proba = pipe.predict_proba(dataset[features])[:, 1]
+    results = dataset[features].copy()
+    results["label"] = dataset["label"]
     results["crash_prob"] = proba
-
     return pipe, results
 
 
+def build_ensemble() -> tuple[float, pd.Series, pd.DataFrame]:
+    """
+    Train one model per threshold, average probabilities across all three.
+    Returns (current_prob, avg_coefs, prob_history).
+    """
+    print("Fetching FRED features from DB...", flush=True)
+    features_eng = engineer_features(fetch_features())
+    feat_cols = [c for c in FEATURE_COLS if c in features_eng.columns]
+
+    all_proba_series = []
+    all_coefs = []
+    aucs = []
+
+    for threshold in ENSEMBLE_THRESHOLDS:
+        print(f"\nTraining model at {threshold:.0%} threshold...", flush=True)
+        ndx = fetch_ndx(threshold)
+        dataset = ndx.join(features_eng, how="inner").dropna()
+        print(f"  {len(dataset)} rows, {dataset['label'].mean():.1%} positive")
+
+        pipe, auc = _train_single(dataset, verbose=True)
+        aucs.append(auc)
+
+        proba = pipe.predict_proba(dataset[feat_cols])[:, 1]
+        all_proba_series.append(pd.Series(proba, index=dataset.index))
+        all_coefs.append(pipe.named_steps["clf"].coef_[0])
+
+    avg_proba = pd.concat(all_proba_series, axis=1).mean(axis=1)
+    avg_coefs = pd.Series(
+        np.mean(all_coefs, axis=0), index=feat_cols
+    ).sort_values(key=abs, ascending=False)
+
+    current_prob = float(avg_proba.iloc[-1])
+    prob_history = avg_proba.reset_index()
+    prob_history.columns = ["date", "crash_prob"]
+
+    print(f"\nEnsemble AUC (avg): {np.mean(aucs):.3f}")
+    print(f"Current crash probability (ensemble): {current_prob:.1%}")
+    print(f"As of: {avg_proba.index[-1].date()}")
+
+    return current_prob, avg_coefs, prob_history
+
+
 def current_signal(pipe: Pipeline, dataset: pd.DataFrame) -> float:
-    """Return crash probability for the most recent date in the dataset."""
     features = [c for c in FEATURE_COLS if c in dataset.columns]
-    latest = dataset[features].iloc[[-1]]
-    prob = pipe.predict_proba(latest)[0, 1]
-    print(f"\nCurrent crash probability (20% NDX drawdown in 12mo): {prob:.1%}")
-    print(f"As of: {dataset.index[-1].date()}")
+    prob = float(pipe.predict_proba(dataset[features].iloc[[-1]])[0, 1])
+    print(f"\nCurrent crash probability: {prob:.1%}")
     return prob
 
 
 if __name__ == "__main__":
-    ds = build_dataset()
-    pipe, results = train(ds)
-    current_signal(pipe, ds)
+    prob, coefs, history = build_ensemble()

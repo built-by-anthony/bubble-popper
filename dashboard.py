@@ -9,7 +9,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
-from model import FEATURE_COLS, build_dataset, train, current_signal
+from model import FEATURE_COLS, build_ensemble
 
 load_dotenv()
 
@@ -46,20 +46,7 @@ SECONDS_PER_YEAR = 365.25 * 24 * 3600
 
 @st.cache_data(ttl=3600)
 def load_model():
-    dataset = build_dataset()
-    pipe, results = train(dataset)
-    prob = current_signal(pipe, dataset)
-
-    features = [c for c in FEATURE_COLS if c in dataset.columns]
-    coefs = pd.Series(
-        pipe.named_steps["clf"].coef_[0],
-        index=features,
-    ).sort_values(key=abs, ascending=False)
-
-    all_proba = pipe.predict_proba(dataset[features])[:, 1]
-    prob_history = pd.DataFrame({"date": dataset.index, "crash_prob": all_proba})
-
-    return prob, coefs, prob_history
+    return build_ensemble()
 
 
 @st.cache_data(ttl=3600)
@@ -268,7 +255,7 @@ with tab_overview:
         st.markdown(f"""
 <div style="text-align:center; padding: 32px 0 16px 0;">
   <div style="color:#888; font-size:13px; letter-spacing:2px; text-transform:uppercase; margin-bottom:8px;">
-    Probability of 20%+ Nasdaq Crash in Next 12 Months
+    Probability of Nasdaq Bear Market in Next 12 Months
   </div>
   <div style="color:#ff4b4b; font-size:80px; font-weight:bold; line-height:1; font-family:'Courier New',monospace;">
     {crash_prob:.1%}
@@ -377,8 +364,8 @@ with tab_companies:
 with tab_model:
     st.subheader("Crash Probability Model")
     st.warning(
-        "**Experimental — not investment advice.** Logistic regression trained on 3–4 historical crash events (dot-com, GFC, 2022). "
-        "Output reflects whether current macro conditions resemble historical pre-crash periods. AUC 0.669 out-of-sample."
+        "**Experimental — not investment advice.** Ensemble of 3 logistic regression models trained at 15%, 20%, and 25% drawdown thresholds. "
+        "Output reflects whether current macro conditions resemble historical pre-crash periods. Probabilities are averaged across thresholds for stability."
     )
 
     with st.spinner("Training model..."):
@@ -386,7 +373,7 @@ with tab_model:
 
     col_a, col_b = st.columns([1, 3])
     with col_a:
-        st.metric("NDX 20%+ Drawdown in 12mo", f"{crash_prob:.1%}")
+        st.metric("NDX Bear Market in 12mo (Ensemble)", f"{crash_prob:.1%}")
         st.caption(f"As of {date.today()}")
 
     with col_b:
