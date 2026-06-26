@@ -54,6 +54,16 @@ def load_observations(metric_ids: list[str], start: date, end: date) -> pd.DataF
 
 st.set_page_config(page_title="Bubble Popper", layout="wide")
 st.title("Bubble Popper — AI Bubble Signal Dashboard")
+st.markdown("""
+This dashboard tracks macroeconomic and company fundamental signals to detect and time the AI bubble.
+Data updates daily via automated ingestion from **FRED** (Federal Reserve Economic Data) and **SEC EDGAR**.
+
+**How to use:**
+- Use the **date range slider** in the sidebar to zoom in on any period
+- **Macro Signals** — toggle individual FRED series and normalize to z-scores to compare on the same scale
+- **Company Fundamentals** — compare R&D spend, margins, and leverage across the 5 major AI companies
+- **Composite Bubble Signal** — a single index averaging all selected macro signals; above zero means conditions are more bubble-like than the historical average
+""")
 
 # --- Sidebar controls ---
 st.sidebar.header("Controls")
@@ -68,6 +78,7 @@ start_date, end_date = date_range
 
 # --- FRED Section ---
 st.header("Macro Signals (FRED)")
+st.caption("Daily and weekly macro data from the Federal Reserve. Select any combination of series. Enable z-score normalization to overlay metrics with different units on the same chart.")
 
 selected_fred = st.multiselect(
     "Select FRED metrics",
@@ -101,6 +112,7 @@ if selected_fred:
 
 # --- EDGAR Section ---
 st.header("Company Fundamentals")
+st.caption("Annual figures from SEC 10-K filings for MSFT, GOOGL, AMZN, META, and NVDA. Balance sheet metrics (debt/assets) are quarterly. Note: AMZN does not report R&D as a separate line item.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -138,7 +150,7 @@ if selected_companies and selected_edgar_metric:
 
 # --- Composite Signal ---
 st.header("Composite Bubble Signal")
-st.caption("Z-score average of all selected FRED metrics. Higher = more bubble-like conditions.")
+st.caption("Z-score average of all selected FRED metrics averaged into a single index. Above zero = conditions are more bubble-like than the historical average. The signal is directional — it shows where we are in the cycle relative to history, not when the bubble pops.")
 
 if selected_fred:
     df_signal = load_observations(selected_fred, start_date, end_date)
