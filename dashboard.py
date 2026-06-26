@@ -263,10 +263,19 @@ with tab_overview:
     with st.spinner("Training model..."):
         crash_prob, coefs, prob_history = load_model()
 
-    _, m_col, _ = st.columns([2, 1, 2])
+    _, m_col, _ = st.columns([1, 2, 1])
     with m_col:
-        st.metric("NDX 30%+ Drawdown in 12mo", f"{crash_prob:.1%}")
-        st.caption(f"As of {date.today()}")
+        st.markdown(f"""
+<div style="text-align:center; padding: 32px 0 16px 0;">
+  <div style="color:#888; font-size:13px; letter-spacing:2px; text-transform:uppercase; margin-bottom:8px;">
+    Probability of 30%+ Nasdaq Crash in Next 12 Months
+  </div>
+  <div style="color:#ff4b4b; font-size:80px; font-weight:bold; line-height:1; font-family:'Courier New',monospace;">
+    {crash_prob:.1%}
+  </div>
+  <div style="color:#555; font-size:12px; margin-top:12px;">As of {date.today()} &nbsp;·&nbsp; Experimental — not investment advice</div>
+</div>
+""", unsafe_allow_html=True)
 
 
 # ── Macro Signals tab ─────────────────────────────────────────────────────────
