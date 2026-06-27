@@ -24,3 +24,7 @@
 - **Label ensembling** — run the model at multiple drawdown thresholds (20%, 25%, 30%) and average the probabilities to reduce sensitivity to the arbitrary cutoff.
 
 ## Dashboard enhancements
+
+### Streamlit API deprecations
+- `use_container_width=True` → `width="stretch"` (deprecated after 2025-12-31). Trivial replace across all charts.
+- `st.components.v1.html` → new components API (deprecated after 2026-06-01). Affects the AI spend clocks.
